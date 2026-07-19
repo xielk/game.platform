@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Game {
+  id               BigInt          @id @default(autoincrement()) @db.UnsignedBigInt
+  gameId           String          @unique @map("game_id") @db.VarChar(100)
+  name             String          @db.VarChar(120)
+  description      String?         @db.Text
+  status           String          @default("draft") @db.VarChar(24)
+  currentVersionId BigInt?         @map("current_version_id") @db.UnsignedBigInt
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  deletedAt        DateTime?       @map("deleted_at")
+  versions         GameVersion[]   @relation("GameVersions")
+  levels           Level[]
+  assets           Asset[]
+  styles           StyleProfile[]
+  maps             Map[]
+  generationTasks  GenerationTask[]
+  exportTasks      ExportTask[]
+
+  @@index([status, createdAt])
+  @@map("games")
+}
+
+model GameVersion {
+  id          BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  gameId      BigInt   @map("game_id") @db.UnsignedBigInt
+  version     String   @db.VarChar(32)
+  status      String   @default("draft") @db.VarChar(24)
+  config      Json?
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  game        Game     @relation("GameVersions", fields: [gameId], references: [id], onDelete: Restrict)
+
+  @@unique([gameId, version])
+  @@index([status])
+  @@map("game_versions")
+}
+
+model Level {
+  id          BigInt       @id @default(autoincrement()) @db.UnsignedBigInt
+  levelId     String       @unique @map("level_id") @db.VarChar(120)
+  gameId      BigInt       @map("game_id") @db.UnsignedBigInt
+  name        String       @db.VarChar(120)
+  description String?      @db.Text
+  sortOrder   Int          @default(0) @map("sort_order")
+  status      String       @default("draft") @db.VarChar(24)
+  config      Json?
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+  deletedAt   DateTime?    @map("deleted_at")
+  game        Game         @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  assets      LevelAsset[]
+  maps        Map[]
+  generationTasks GenerationTask[]
+  exportTasks ExportTask[]
+
+  @@index([gameId, status, sortOrder])
+  @@map("levels")
+}
+
+model AssetType {
+  id              BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  typeId          String   @unique @map("type_id") @db.VarChar(64)
+  name            String   @db.VarChar(80)
+  category        String?  @db.VarChar(64)
+  allowedMimeTypes Json?   @map("allowed_mime_types")
+  isEnabled       Boolean  @default(true) @map("is_enabled")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
+  assets          Asset[]
+  promptTemplates PromptTemplate[]
+  generationTasks GenerationTask[]
+
+  @@index([category, isEnabled])
+  @@map("asset_types")
+}
+
+model Asset {
+  id               BigInt          @id @default(autoincrement()) @db.UnsignedBigInt
+  assetId          String          @unique @map("asset_id") @db.VarChar(180)
+  gameId           BigInt          @map("game_id") @db.UnsignedBigInt
+  assetTypeId      BigInt          @map("asset_type_id") @db.UnsignedBigInt
+  displayName      String          @map("display_name") @db.VarChar(160)
+  description      String?         @db.Text
+  status           String          @default("draft") @db.VarChar(24)
+  tags             Json?
+  currentVersionId BigInt?         @map("current_version_id") @db.UnsignedBigInt
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  deletedAt        DateTime?       @map("deleted_at")
+  game             Game            @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  assetType        AssetType       @relation(fields: [assetTypeId], references: [id], onDelete: Restrict)
+  versions         AssetVersion[]
+  levelLinks       LevelAsset[]
+  outgoing         AssetRelation[] @relation("RelationSource")
+  incoming         AssetRelation[] @relation("RelationTarget")
+  generationTasks  GenerationTask[]
+
+  @@index([gameId, assetTypeId, status])
+  @@index([displayName])
+  @@map("assets")
+}
+
+model AssetVersion {
+  id                    BigInt             @id @default(autoincrement()) @db.UnsignedBigInt
+  assetId               BigInt             @map("asset_id") @db.UnsignedBigInt
+  versionNumber         Int                @map("version_number")
+  parentVersionId       BigInt?            @map("parent_version_id") @db.UnsignedBigInt
+  status                String             @default("draft") @db.VarChar(24)
+  designSpec            Json?              @map("design_spec")
+  prompt                String?            @db.LongText
+  negativePrompt        String?            @map("negative_prompt") @db.Text
+  styleProfileSnapshot  Json?              @map("style_profile_snapshot")
+  generationMetadata    Json?              @map("generation_metadata")
+  publishedAt           DateTime?          @map("published_at")
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+  asset                 Asset              @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  parentVersion         AssetVersion?      @relation("VersionParent", fields: [parentVersionId], references: [id], onDelete: Restrict)
+  childVersions         AssetVersion[]     @relation("VersionParent")
+  files                 AssetFile[]
+  levelLinks            LevelAsset[]
+  generationResults     GenerationResult[]
+
+  @@unique([assetId, versionNumber])
+  @@index([status, createdAt])
+  @@map("asset_versions")
+}
+
+model AssetFile {
+  id          BigInt       @id @default(autoincrement()) @db.UnsignedBigInt
+  versionId   BigInt?      @map("version_id") @db.UnsignedBigInt
+  purpose     String       @db.VarChar(40)
+  provider    String       @default("local") @db.VarChar(32)
+  storageKey  String       @unique @map("storage_key") @db.VarChar(500)
+  originalName String      @map("original_name") @db.VarChar(255)
+  mimeType    String       @map("mime_type") @db.VarChar(120)
+  sizeBytes   BigInt       @map("size_bytes") @db.UnsignedBigInt
+  sha256      String       @db.Char(64)
+  publicPath  String       @map("public_path") @db.VarChar(600)
+  metadata    Json?
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+  version     AssetVersion? @relation(fields: [versionId], references: [id], onDelete: SetNull)
+  generationResults GenerationResult[]
+
+  @@index([versionId, purpose])
+  @@index([sha256])
+  @@map("asset_files")
+}
+
+model LevelAsset {
+  id             BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  levelId        BigInt        @map("level_id") @db.UnsignedBigInt
+  assetId        BigInt        @map("asset_id") @db.UnsignedBigInt
+  assetVersionId BigInt?       @map("asset_version_id") @db.UnsignedBigInt
+  usage          String        @default("default") @db.VarChar(64)
+  config         Json?
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  level          Level         @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  asset          Asset         @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  assetVersion   AssetVersion? @relation(fields: [assetVersionId], references: [id], onDelete: Restrict)
+
+  @@unique([levelId, assetId, usage])
+  @@index([assetId])
+  @@map("level_assets")
+}
+
+model AssetRelation {
+  id            BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  sourceAssetId BigInt   @map("source_asset_id") @db.UnsignedBigInt
+  targetAssetId BigInt   @map("target_asset_id") @db.UnsignedBigInt
+  relationType  String   @map("relation_type") @db.VarChar(64)
+  sortOrder     Int      @default(0) @map("sort_order")
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  source        Asset    @relation("RelationSource", fields: [sourceAssetId], references: [id], onDelete: Restrict)
+  target        Asset    @relation("RelationTarget", fields: [targetAssetId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceAssetId, targetAssetId, relationType])
+  @@index([targetAssetId, relationType])
+  @@map("asset_relations")
+}
+
+model StyleProfile {
+  id                       BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  styleId                  String   @unique @map("style_id") @db.VarChar(120)
+  styleName                String   @map("style_name") @db.VarChar(120)
+  gameId                   BigInt   @map("game_id") @db.UnsignedBigInt
+  version                  Int      @default(1)
+  cameraAngle              String?  @map("camera_angle") @db.VarChar(120)
+  perspective              String?  @db.VarChar(120)
+  artStyle                 String?  @map("art_style") @db.VarChar(180)
+  outlineStyle             String?  @map("outline_style") @db.VarChar(180)
+  colorPalette             Json?    @map("color_palette")
+  lightingDirection        String?  @map("lighting_direction") @db.VarChar(120)
+  shadowStyle              String?  @map("shadow_style") @db.VarChar(180)
+  backgroundRequirement    String?  @map("background_requirement") @db.VarChar(180)
+  transparencyRequirement  String?  @map("transparency_requirement") @db.VarChar(180)
+  characterScale           String?  @map("character_scale") @db.VarChar(120)
+  towerScale               String?  @map("tower_scale") @db.VarChar(120)
+  frameCanvasSize          String?  @map("frame_canvas_size") @db.VarChar(64)
+  tileSize                 Int?     @map("tile_size")
+  animationFpsDefault      Int?     @map("animation_fps_default")
+  directionCount           Int?     @map("direction_count")
+  promptPrefix             String?  @map("prompt_prefix") @db.Text
+  negativePrompt           String?  @map("negative_prompt") @db.Text
+  referenceImages          Json?    @map("reference_images")
+  isActive                 Boolean  @default(true) @map("is_active")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+  deletedAt                DateTime? @map("deleted_at")
+  game                     Game     @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  generationTasks          GenerationTask[]
+
+  @@index([gameId, isActive])
+  @@map("style_profiles")
+}
+
+model PromptTemplate {
+  id          BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  templateId  String    @unique @map("template_id") @db.VarChar(120)
+  name        String    @db.VarChar(120)
+  assetTypeId BigInt?   @map("asset_type_id") @db.UnsignedBigInt
+  template    String    @db.LongText
+  variables   Json?
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+  assetType   AssetType? @relation(fields: [assetTypeId], references: [id], onDelete: SetNull)
+
+  @@index([assetTypeId, isActive])
+  @@map("prompt_templates")
+}
+
+model GenerationTask {
+  id             BigInt             @id @default(autoincrement()) @db.UnsignedBigInt
+  taskId         String             @unique @map("task_id") @db.VarChar(120)
+  gameId         BigInt             @map("game_id") @db.UnsignedBigInt
+  levelId        BigInt?            @map("level_id") @db.UnsignedBigInt
+  assetTypeId    BigInt             @map("asset_type_id") @db.UnsignedBigInt
+  assetId        BigInt?            @map("asset_id") @db.UnsignedBigInt
+  styleProfileId BigInt?            @map("style_profile_id") @db.UnsignedBigInt
+  status         String             @default("draft") @db.VarChar(24)
+  provider       String             @db.VarChar(64)
+  model          String?            @db.VarChar(120)
+  input          Json
+  designSpec     Json?              @map("design_spec")
+  prompt         String?            @db.LongText
+  negativePrompt String?            @map("negative_prompt") @db.Text
+  modelParams    Json?              @map("model_params")
+  runtimeLogs    Json?              @map("runtime_logs")
+  referenceFileIds Json?            @map("reference_file_ids")
+  attemptCount   Int                @default(0) @map("attempt_count")
+  maxAttempts    Int                @default(3) @map("max_attempts")
+  errorMessage   String?            @map("error_message") @db.Text
+  startedAt      DateTime?          @map("started_at")
+  finishedAt     DateTime?          @map("finished_at")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+  game           Game               @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  level          Level?             @relation(fields: [levelId], references: [id], onDelete: SetNull)
+  assetType      AssetType          @relation(fields: [assetTypeId], references: [id], onDelete: Restrict)
+  asset          Asset?             @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  styleProfile   StyleProfile?      @relation(fields: [styleProfileId], references: [id], onDelete: SetNull)
+  results        GenerationResult[]
+
+  @@index([status, createdAt])
+  @@index([gameId, assetTypeId])
+  @@map("generation_tasks")
+}
+
+model GenerationResult {
+  id             BigInt        @id @default(autoincrement()) @db.UnsignedBigInt
+  resultId       String        @unique @map("result_id") @db.VarChar(120)
+  taskId         BigInt        @map("task_id") @db.UnsignedBigInt
+  fileId         BigInt?       @map("file_id") @db.UnsignedBigInt
+  assetVersionId BigInt?       @map("asset_version_id") @db.UnsignedBigInt
+  providerResultId String?     @map("provider_result_id") @db.VarChar(180)
+  seed           String?       @db.VarChar(120)
+  metadata       Json?
+  selected       Boolean       @default(false)
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  task           GenerationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  file           AssetFile?    @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  assetVersion   AssetVersion? @relation(fields: [assetVersionId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, selected])
+  @@map("generation_results")
+}
+
+model ExportTask {
+  id              BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  exportId        String   @unique @map("export_id") @db.VarChar(120)
+  scopeType       String   @map("scope_type") @db.VarChar(24)
+  gameId          BigInt   @map("game_id") @db.UnsignedBigInt
+  levelId         BigInt?  @map("level_id") @db.UnsignedBigInt
+  gameVersionId   BigInt?  @map("game_version_id") @db.UnsignedBigInt
+  status          String   @default("queued") @db.VarChar(24)
+  schemaVersion   String   @default("1.0") @map("schema_version") @db.VarChar(24)
+  options         Json?
+  integrityReport Json?    @map("integrity_report")
+  storageKey      String?  @map("storage_key") @db.VarChar(500)
+  sha256          String?  @db.Char(64)
+  errorMessage    String?  @map("error_message") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  finishedAt      DateTime? @map("finished_at")
+  game            Game     @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  level           Level?   @relation(fields: [levelId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([gameId, levelId])
+  @@map("export_tasks")
+}
+
+model Map {
+  id               BigInt       @id @default(autoincrement()) @db.UnsignedBigInt
+  mapId            String       @unique @map("map_id") @db.VarChar(160)
+  gameId           BigInt       @map("game_id") @db.UnsignedBigInt
+  levelId          BigInt?      @map("level_id") @db.UnsignedBigInt
+  name             String       @db.VarChar(160)
+  format           String       @default("tiled_json") @db.VarChar(40)
+  currentVersionId BigInt?      @map("current_version_id") @db.UnsignedBigInt
+  status           String       @default("draft") @db.VarChar(24)
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+  deletedAt        DateTime?    @map("deleted_at")
+  game             Game         @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  level            Level?       @relation(fields: [levelId], references: [id], onDelete: SetNull)
+  versions         MapVersion[]
+
+  @@index([gameId, levelId, status])
+  @@map("maps")
+}
+
+model MapVersion {
+  id              BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  mapId           BigInt   @map("map_id") @db.UnsignedBigInt
+  versionNumber   Int      @map("version_number")
+  parentVersionId BigInt?  @map("parent_version_id") @db.UnsignedBigInt
+  format          String   @db.VarChar(40)
+  width           Int?
+  height          Int?
+  tileWidth       Int?     @map("tile_width")
+  tileHeight      Int?     @map("tile_height")
+  layers          Json?
+  objects         Json?
+  fileRefs        Json?    @map("file_refs")
+  status          String   @default("draft") @db.VarChar(24)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  map             Map      @relation(fields: [mapId], references: [id], onDelete: Restrict)
+  parentVersion   MapVersion? @relation("MapVersionParent", fields: [parentVersionId], references: [id], onDelete: Restrict)
+  childVersions   MapVersion[] @relation("MapVersionParent")
+
+  @@unique([mapId, versionNumber])
+  @@map("map_versions")
+}

@@ -1,0 +1,123 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import { PrismaService } from '../prisma.service';
+import { StorageService } from '../storage/storage.service';
+import { AIProvider, DesignInput, MockAIProvider, OpenAICompatibleProvider } from './ai.provider';
+
+type RuntimeLogLevel = 'info' | 'warn' | 'error';
+type RuntimeLogEntry = { ts: string; level: RuntimeLogLevel; message: string; data?: Record<string, unknown> };
+
+@Injectable()
+export class GenerationService {
+  private readonly logger = new Logger(GenerationService.name);
+  constructor(private readonly db: PrismaService, private readonly storage: StorageService) {}
+  private provider(): AIProvider { return process.env.AI_PROVIDER === 'openai-compatible' ? new OpenAICompatibleProvider() : new MockAIProvider(); }
+  private now() { return new Date().toISOString(); }
+  private isGptImageModel(model: string) { return /^gpt-image/i.test(model); }
+  private normalizeImageSize(model: string, size?: string) {
+    const requested = size || '1024x1024';
+    if (this.isGptImageModel(model) && requested === '512x512') return '1024x1024';
+    return requested;
+  }
+  private normalizePromptForModel(model: string, prompt: string) {
+    if (!this.isGptImageModel(model)) return prompt;
+    return prompt
+      .replace(/transparent background/gi, '')
+      .replace(/背景透明/g, '纯白背景')
+      .replace(/\s*,\s*,/g, ',')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
+      .replace(/^,|,$/g, '');
+  }
+  private normalizeModelParamsForRun(model: string, params: Record<string, unknown>) {
+    const normalized: Record<string, unknown> = {
+      ...params,
+      quantity: params.quantity || 1,
+      size: this.normalizeImageSize(model, String(params.size || '1024x1024')),
+      outputFormat: params.outputFormat || 'png',
+      quality: params.quality || process.env.AI_IMAGE_QUALITY || 'low',
+    };
+    if (this.isGptImageModel(model)) delete normalized.background;
+    return normalized;
+  }
+  private providerPayloadPreview(model: string, prompt: string, options: Record<string, unknown>) {
+    const payload: Record<string, unknown> = { model, prompt, size: options.size || '1024x1024' };
+    if (Number(options.quantity || 1) > 1) payload.n = options.quantity;
+    if (options.background && process.env.AI_IMAGE_USE_BACKGROUND_PARAM === 'true') payload.background = options.background;
+    if (options.outputFormat) payload.output_format = options.outputFormat;
+    if (options.quality) payload.quality = options.quality;
+    if (!this.isGptImageModel(model)) payload.response_format = 'b64_json';
+    return payload;
+  }
+  private async appendLog(taskId: string, level: RuntimeLogLevel, message: string, data?: Record<string, unknown>) {
+    const current = await this.db.generationTask.findUniqueOrThrow({ where: { taskId }, select: { runtimeLogs: true } });
+    const logs = Array.isArray(current.runtimeLogs) ? [...(current.runtimeLogs as RuntimeLogEntry[])] : [];
+    const entry: RuntimeLogEntry = { ts: this.now(), level, message, ...(data && Object.keys(data).length ? { data } : {}) };
+    logs.push(entry);
+    await this.db.generationTask.update({ where: { taskId }, data: { runtimeLogs: logs.slice(-80) as Prisma.InputJsonValue } });
+    const suffix = data ? ` ${JSON.stringify(data)}` : '';
+    const text = `[${taskId}] ${message}${suffix}`;
+    if (level === 'error') this.logger.error(text);
+    else if (level === 'warn') this.logger.warn(text);
+    else this.logger.log(text);
+  }
+
+  async draft(input: DesignInput & { gameId: string; levelId?: string; styleId?: string }) {
+    const [game, type, level, style] = await Promise.all([
+      this.db.game.findUniqueOrThrow({ where: { gameId: input.gameId } }), this.db.assetType.findUniqueOrThrow({ where: { typeId: input.typeId } }),
+      input.levelId ? this.db.level.findUniqueOrThrow({ where: { levelId: input.levelId } }) : null,
+      input.styleId ? this.db.styleProfile.findUniqueOrThrow({ where: { styleId: input.styleId } }) : this.db.styleProfile.findFirst({ where: { game: { gameId: input.gameId }, isActive: true, deletedAt: null }, orderBy: { updatedAt: 'desc' } }),
+    ]);
+    const styleSnapshot = style ? JSON.parse(JSON.stringify(style, (_k, v) => typeof v === 'bigint' ? v.toString() : v)) : {};
+    const providerName = process.env.AI_PROVIDER || 'mock';
+    const modelName = process.env.AI_IMAGE_MODEL || 'mock-image';
+    this.logger.log(`Drafting generation spec for ${input.gameId}/${input.typeId} with provider=${providerName}, model=${modelName}`);
+    const normalizedInput = {
+      ...input,
+      targetSize: this.normalizeImageSize(modelName, input.targetSize || (styleSnapshot as any).frameCanvasSize),
+      transparent: this.isGptImageModel(modelName) ? false : (input.transparent ?? true),
+    };
+    const spec = await this.provider().generateDesignSpec(normalizedInput, styleSnapshot);
+    const prompts = await this.provider().generatePrompt(spec, styleSnapshot);
+    const modelParams: Record<string, unknown> = { quantity: input.quantity || 1, size: normalizedInput.targetSize, outputFormat: 'png', quality: process.env.AI_IMAGE_QUALITY || 'low' };
+    if (!this.isGptImageModel(modelName)) modelParams.background = normalizedInput.transparent === false ? 'opaque' : 'transparent';
+    const task = await this.db.generationTask.create({ data: { taskId: `gen_${randomUUID().replace(/-/g, '')}`, gameId: game.id, levelId: level?.id, assetTypeId: type.id, styleProfileId: style?.id, status: 'draft', provider: providerName, model: modelName, input: input as any, designSpec: spec as any, prompt: prompts.prompt, negativePrompt: prompts.negativePrompt, modelParams: modelParams as Prisma.InputJsonValue, runtimeLogs: [{ ts: this.now(), level: 'info', message: 'Design Spec 已生成', data: { provider: providerName, model: modelName, assetType: input.typeId, size: modelParams.size, transparent: normalizedInput.transparent } }] as Prisma.InputJsonValue } });
+    return task;
+  }
+
+  async confirm(taskId: string, patch?: { prompt?: string; negativePrompt?: string }) {
+    const task = await this.db.generationTask.update({ where: { taskId }, data: { ...patch, status: 'queued', errorMessage: null } });
+    await this.appendLog(taskId, 'info', '任务已进入队列', { status: 'queued' });
+    setImmediate(() => void this.run(taskId));
+    return task;
+  }
+  async retry(taskId: string) { return this.confirm(taskId); }
+  async cancel(taskId: string) {
+    await this.appendLog(taskId, 'warn', '任务被手动取消');
+    return this.db.generationTask.update({ where: { taskId }, data: { status: 'cancelled', finishedAt: new Date() } });
+  }
+  async run(taskId: string) {
+    try {
+      const task = await this.db.generationTask.update({ where: { taskId }, data: { status: 'processing', startedAt: new Date(), attemptCount: { increment: 1 } } });
+      const options = this.normalizeModelParamsForRun(task.model || process.env.AI_IMAGE_MODEL || 'mock-image', (task.modelParams || {}) as Record<string, unknown>);
+      const prompt = this.normalizePromptForModel(task.model || process.env.AI_IMAGE_MODEL || 'mock-image', task.prompt || '');
+      const requestUrl = `${(process.env.AI_API_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')}/images/generations`;
+      await this.appendLog(taskId, 'info', '开始调用 AI 生成', { provider: task.provider, model: task.model, requestUrl, payload: this.providerPayloadPreview(task.model || '', prompt, options) });
+      const results = await this.provider().generateImage(prompt, options);
+      await this.appendLog(taskId, 'info', 'AI 返回结果', { count: results.length });
+      for (const result of results) {
+        const stored = await this.storage.put(result.buffer, `${task.taskId}.png`, result.mimeType, `generation/${task.taskId}`);
+        const file = await this.db.assetFile.create({ data: { purpose: 'generated', provider: 'local', storageKey: stored.key, originalName: stored.originalName, mimeType: stored.mimeType, sizeBytes: BigInt(stored.size), sha256: stored.sha256, publicPath: stored.publicPath } });
+        await this.db.generationResult.create({ data: { resultId: `result_${randomUUID().replace(/-/g, '')}`, taskId: task.id, fileId: file.id, providerResultId: result.providerResultId, seed: result.seed, metadata: result.metadata as any } });
+        await this.appendLog(taskId, 'info', '已保存结果文件', { publicPath: stored.publicPath, mimeType: stored.mimeType, size: stored.size });
+      }
+      await this.db.generationTask.update({ where: { taskId }, data: { status: 'succeeded', finishedAt: new Date() } });
+      await this.appendLog(taskId, 'info', '任务成功完成', { resultCount: results.length });
+    } catch (error: any) {
+      const message = String(error?.message || error).replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').slice(0, 2000);
+      await this.db.generationTask.update({ where: { taskId }, data: { status: 'failed', errorMessage: message, finishedAt: new Date() } });
+      await this.appendLog(taskId, 'error', '任务失败', { message });
+    }
+  }
+}

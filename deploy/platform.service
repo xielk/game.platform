@@ -1,0 +1,17 @@
+[Unit]
+Description=2D Game Asset Studio
+After=network.target mariadb.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/platform
+EnvironmentFile=/root/platform/.env
+ExecStart=/usr/bin/node /root/platform/runtime/dist/main.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
