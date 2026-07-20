@@ -11,6 +11,9 @@ class DraftDto {
   @IsString() @Matches(stableId) gameId!: string; @IsOptional() @IsString() levelId?: string; @IsString() @Matches(stableId) typeId!: string;
   @IsString() name!: string; @IsString() description!: string; @IsOptional() @IsString() styleId?: string; @IsOptional() @IsString() targetSize?: string;
   @IsOptional() @IsBoolean() transparent?: boolean; @IsOptional() @IsString() animation?: string; @IsOptional() @IsInt() @Min(1) quantity?: number;
+  @IsOptional() @IsString() characterName?: string; @IsOptional() @IsString() characterDescription?: string; @IsOptional() @IsString() weaponType?: string;
+  @IsOptional() @IsString() artStyle?: string; @IsOptional() @IsString() facing?: string; @IsOptional() @IsString() sheetSize?: string;
+  @IsOptional() @IsString() frameSize?: string; @IsOptional() @IsString() animationFrameConfig?: string; @IsOptional() @IsBoolean() removeShadow?: boolean;
 }
 
 @ApiTags('generation') @ApiSecurity('admin') @UseGuards(AdminGuard) @Controller('generation')
@@ -67,7 +70,26 @@ export class GenerationController {
     const asset = existing || await this.db.asset.create({ data: { assetId: body.assetId, gameId: result.task.gameId, assetTypeId: result.task.assetTypeId, displayName: body.displayName, status: 'draft' }, include: { versions: true } });
     const number = (existing?.versions[0]?.versionNumber || 0) + 1;
     const version = await this.db.assetVersion.create({ data: { assetId: asset.id, versionNumber: number, parentVersionId: existing?.versions[0]?.id, designSpec: result.task.designSpec || undefined, prompt: result.task.prompt, negativePrompt: result.task.negativePrompt, generationMetadata: { provider: result.task.provider, model: result.task.model, taskId: result.task.taskId }, styleProfileSnapshot: result.task.styleProfileId ? { styleProfileId: result.task.styleProfileId.toString() } : undefined } });
-    if (result.fileId) await this.db.assetFile.update({ where: { id: result.fileId }, data: { versionId: version.id, purpose: 'source' } });
+    const modelParams = (result.task.modelParams || {}) as Record<string, any>;
+    const isNpcSpriteSheet = result.task.assetType.typeId === 'npc' && modelParams.spriteSheet === 'npc';
+    if (result.fileId) await this.db.assetFile.update({ where: { id: result.fileId }, data: { versionId: version.id, purpose: 'source', ...(isNpcSpriteSheet ? { originalName: 'npc_sprite_sheet.png' } : {}) } });
+    if (isNpcSpriteSheet) {
+      const manifest = {
+        image: 'npc_sprite_sheet.png',
+        frameWidth: 256,
+        frameHeight: 256,
+        columns: 4,
+        rows: 4,
+        animations: {
+          idle: { start: 0, end: 3, frameRate: 6, repeat: -1 },
+          walk: { start: 4, end: 7, frameRate: 8, repeat: -1 },
+          attack: { start: 8, end: 11, frameRate: 10, repeat: 0 },
+          die: { start: 12, end: 15, frameRate: 7, repeat: 0 },
+        },
+      };
+      const stored = await this.storage.put(Buffer.from(JSON.stringify(manifest, null, 2)), 'npc_sprite_sheet.json', 'application/json', body.assetId);
+      await this.db.assetFile.create({ data: { versionId: version.id, purpose: 'metadata', provider: 'local', storageKey: stored.key, originalName: stored.originalName, mimeType: stored.mimeType, sizeBytes: BigInt(stored.size), sha256: stored.sha256, publicPath: stored.publicPath } });
+    }
     await this.db.generationResult.update({ where: { id: result.id }, data: { selected: true, assetVersionId: version.id } });
     if (body.levelId) { const level = await this.db.level.findUniqueOrThrow({ where: { levelId: body.levelId } }); await this.db.levelAsset.upsert({ where: { levelId_assetId_usage: { levelId: level.id, assetId: asset.id, usage: 'default' } }, update: { assetVersionId: version.id }, create: { levelId: level.id, assetId: asset.id, assetVersionId: version.id, usage: 'default' } }); }
     return { asset, version };

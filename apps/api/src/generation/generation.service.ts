@@ -15,12 +15,14 @@ export class GenerationService {
   private provider(): AIProvider { return process.env.AI_PROVIDER === 'openai-compatible' ? new OpenAICompatibleProvider() : new MockAIProvider(); }
   private now() { return new Date().toISOString(); }
   private isGptImageModel(model: string) { return /^gpt-image/i.test(model); }
+  private isNpcSpriteSheet(input: { typeId?: string }) { return input.typeId === 'npc'; }
   private normalizeImageSize(model: string, size?: string) {
     const requested = size || '1024x1024';
     if (this.isGptImageModel(model) && requested === '512x512') return '1024x1024';
     return requested;
   }
-  private normalizePromptForModel(model: string, prompt: string) {
+  private normalizePromptForModel(model: string, prompt: string, options: Record<string, unknown>) {
+    if (options.requiresTransparentAlpha) return prompt;
     if (!this.isGptImageModel(model)) return prompt;
     return prompt
       .replace(/transparent background/gi, '')
@@ -38,13 +40,13 @@ export class GenerationService {
       outputFormat: params.outputFormat || 'png',
       quality: params.quality || process.env.AI_IMAGE_QUALITY || 'low',
     };
-    if (this.isGptImageModel(model)) delete normalized.background;
+    if (this.isGptImageModel(model) && !normalized.requiresTransparentAlpha) delete normalized.background;
     return normalized;
   }
   private providerPayloadPreview(model: string, prompt: string, options: Record<string, unknown>) {
     const payload: Record<string, unknown> = { model, prompt, size: options.size || '1024x1024' };
     if (Number(options.quantity || 1) > 1) payload.n = options.quantity;
-    if (options.background && process.env.AI_IMAGE_USE_BACKGROUND_PARAM === 'true') payload.background = options.background;
+    if (options.background && (process.env.AI_IMAGE_USE_BACKGROUND_PARAM === 'true' || options.requiresTransparentAlpha)) payload.background = options.background;
     if (options.outputFormat) payload.output_format = options.outputFormat;
     if (options.quality) payload.quality = options.quality;
     if (!this.isGptImageModel(model)) payload.response_format = 'b64_json';
@@ -72,16 +74,46 @@ export class GenerationService {
     const styleSnapshot = style ? JSON.parse(JSON.stringify(style, (_k, v) => typeof v === 'bigint' ? v.toString() : v)) : {};
     const providerName = process.env.AI_PROVIDER || 'mock';
     const modelName = process.env.AI_IMAGE_MODEL || 'mock-image';
+    const isNpcSpriteSheet = this.isNpcSpriteSheet(input);
     this.logger.log(`Drafting generation spec for ${input.gameId}/${input.typeId} with provider=${providerName}, model=${modelName}`);
     const normalizedInput = {
       ...input,
-      targetSize: this.normalizeImageSize(modelName, input.targetSize || (styleSnapshot as any).frameCanvasSize),
-      transparent: this.isGptImageModel(modelName) ? false : (input.transparent ?? true),
+      name: input.characterName || input.name,
+      description: input.characterDescription || input.description,
+      targetSize: isNpcSpriteSheet ? '1024x1024' : this.normalizeImageSize(modelName, input.targetSize || (styleSnapshot as any).frameCanvasSize),
+      sheetSize: isNpcSpriteSheet ? '1024x1024' : input.sheetSize,
+      frameSize: isNpcSpriteSheet ? '256x256' : input.frameSize,
+      animationFrameConfig: isNpcSpriteSheet ? 'idle:0-3@6 loop; walk:4-7@8 loop; attack:8-11@10 once; die:12-15@7 once' : input.animationFrameConfig,
+      transparent: isNpcSpriteSheet ? true : (this.isGptImageModel(modelName) ? false : (input.transparent ?? true)),
+      removeShadow: isNpcSpriteSheet ? true : input.removeShadow,
     };
     const spec = await this.provider().generateDesignSpec(normalizedInput, styleSnapshot);
     const prompts = await this.provider().generatePrompt(spec, styleSnapshot);
-    const modelParams: Record<string, unknown> = { quantity: input.quantity || 1, size: normalizedInput.targetSize, outputFormat: 'png', quality: process.env.AI_IMAGE_QUALITY || 'low' };
-    if (!this.isGptImageModel(modelName)) modelParams.background = normalizedInput.transparent === false ? 'opaque' : 'transparent';
+    const modelParams: Record<string, unknown> = {
+      quantity: isNpcSpriteSheet ? 1 : (input.quantity || 1),
+      size: normalizedInput.targetSize,
+      outputFormat: 'png',
+      quality: process.env.AI_IMAGE_QUALITY || 'low',
+    };
+    if (isNpcSpriteSheet) Object.assign(modelParams, {
+      background: 'transparent',
+      requiresTransparentAlpha: true,
+      spriteSheet: 'npc',
+      frameWidth: 256,
+      frameHeight: 256,
+      columns: 4,
+      rows: 4,
+      totalFrames: 16,
+      exportImage: 'npc_sprite_sheet.png',
+      exportJson: 'npc_sprite_sheet.json',
+      animations: {
+        idle: { start: 0, end: 3, frameRate: 6, repeat: -1 },
+        walk: { start: 4, end: 7, frameRate: 8, repeat: -1 },
+        attack: { start: 8, end: 11, frameRate: 10, repeat: 0 },
+        die: { start: 12, end: 15, frameRate: 7, repeat: 0 },
+      },
+    });
+    else if (!this.isGptImageModel(modelName)) modelParams.background = normalizedInput.transparent === false ? 'opaque' : 'transparent';
     const task = await this.db.generationTask.create({ data: { taskId: `gen_${randomUUID().replace(/-/g, '')}`, gameId: game.id, levelId: level?.id, assetTypeId: type.id, styleProfileId: style?.id, status: 'draft', provider: providerName, model: modelName, input: input as any, designSpec: spec as any, prompt: prompts.prompt, negativePrompt: prompts.negativePrompt, modelParams: modelParams as Prisma.InputJsonValue, runtimeLogs: [{ ts: this.now(), level: 'info', message: 'Design Spec 已生成', data: { provider: providerName, model: modelName, assetType: input.typeId, size: modelParams.size, transparent: normalizedInput.transparent } }] as Prisma.InputJsonValue } });
     return task;
   }
@@ -101,7 +133,7 @@ export class GenerationService {
     try {
       const task = await this.db.generationTask.update({ where: { taskId }, data: { status: 'processing', startedAt: new Date(), attemptCount: { increment: 1 } } });
       const options = this.normalizeModelParamsForRun(task.model || process.env.AI_IMAGE_MODEL || 'mock-image', (task.modelParams || {}) as Record<string, unknown>);
-      const prompt = this.normalizePromptForModel(task.model || process.env.AI_IMAGE_MODEL || 'mock-image', task.prompt || '');
+      const prompt = this.normalizePromptForModel(task.model || process.env.AI_IMAGE_MODEL || 'mock-image', task.prompt || '', options);
       const requestUrl = `${(process.env.AI_API_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')}/images/generations`;
       await this.appendLog(taskId, 'info', '开始调用 AI 生成', { provider: task.provider, model: task.model, requestUrl, payload: this.providerPayloadPreview(task.model || '', prompt, options) });
       const results = await this.provider().generateImage(prompt, options);

@@ -10,7 +10,9 @@
     "prisma:generate": "prisma generate",
     "db:migrate": "node scripts/prisma-run.mjs migrate dev",
     "db:deploy": "node scripts/prisma-run.mjs migrate deploy",
-    "db:seed": "node scripts/prisma-run.mjs db seed",
+    "db:sql": "node scripts/sql-run.mjs",
+    "db:seed": "node scripts/sql-run.mjs prisma/seed.sql",
+    "db:apply:npc": "node scripts/sql-run.mjs deploy/sql/20260720_add_npc_sprite_sheet_template.sql",
     "start": "npm run start -w @studio/api"
   },
   "dependencies": {
