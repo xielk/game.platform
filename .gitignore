@@ -16,6 +16,7 @@ release/
 # runtime data
 storage/*
 !storage/.gitkeep
+apps/*/storage/*
 exports/*
 !exports/.gitkeep
 logs/

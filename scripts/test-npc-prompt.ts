@@ -13,15 +13,21 @@ async function main() {
   const provider = useRealProvider ? new OpenAICompatibleProvider() : new MockAIProvider();
 
   const input: DesignInput = {
-    name: '哥布林',
-    description: '绿色皮肤的哥布林战士，破旧皮甲，凶狠表情',
+    name: '沼泽兽',
+    description: '沼泽兽，四足爬行，湿滑绿色皮肤，背部长有骨刺，口中利齿，尾巴粗壮',
     typeId: 'npc',
-    characterName: '哥布林',
-    characterDescription: '绿色皮肤的哥布林战士，破旧皮甲，凶狠表情',
-    weaponType: '木棒',
+    characterName: '沼泽兽 (Swamp Beast)',
+    characterDescription: 'a four-legged swamp monster, slick green-brown skin, bony spikes along its back, sharp teeth, a thick tail',
+    weaponType: 'its own sharp claws and teeth',
     facing: 'right',
+    bodyType: 'creature',
   };
-  const style = { promptPrefix: 'dark sci-fi neon style, clean silhouette, high contrast, crisp edges, game-ready' };
+  // Same style anchor the user manually verified as "非常好" at low quality —
+  // only the AI_IMAGE_QUALITY env var differs, so this is a clean A/B test.
+  const style = {
+    promptPrefix: '2D game asset, clean silhouette, high contrast, isolated subject, transparent background, crisp edges, game-ready',
+    artStyle: '2D 俯视/斜俯视，霓虹高亮，清晰轮廓，游戏素材风格统一',
+  };
 
   const spec = await provider.generateDesignSpec(input, style);
   const { prompt, negativePrompt } = await provider.generatePrompt(spec, style);

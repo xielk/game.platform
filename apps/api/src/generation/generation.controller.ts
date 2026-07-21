@@ -14,6 +14,7 @@ class DraftDto {
   @IsOptional() @IsString() characterName?: string; @IsOptional() @IsString() characterDescription?: string; @IsOptional() @IsString() weaponType?: string;
   @IsOptional() @IsString() artStyle?: string; @IsOptional() @IsString() facing?: string; @IsOptional() @IsString() sheetSize?: string;
   @IsOptional() @IsString() frameSize?: string; @IsOptional() @IsString() animationFrameConfig?: string; @IsOptional() @IsBoolean() removeShadow?: boolean;
+  @IsOptional() @IsString() bodyType?: string;
 }
 
 @ApiTags('generation') @ApiSecurity('admin') @UseGuards(AdminGuard) @Controller('generation')

@@ -11,6 +11,7 @@ export interface DesignInput {
   weaponType?: string;
   artStyle?: string;
   facing?: string;
+  bodyType?: string;
   sheetSize?: string;
   frameSize?: string;
   animationFrameConfig?: string;
@@ -47,6 +48,7 @@ export class MockAIProvider implements AIProvider {
           weaponType: input.weaponType || 'single readable weapon',
           artStyle: input.artStyle || style.artStyle || 'production-ready 2D tower defense game art on transparent background',
           facing: input.facing || 'right',
+          bodyType: input.bodyType === 'creature' ? 'creature' : 'humanoid',
         },
         output: {
           imageFormat: 'png',
@@ -97,12 +99,25 @@ export class MockAIProvider implements AIProvider {
         .replace(/\s+/g, ' ')
         .trim();
       const facing = character.facing || 'right';
+      // Explicit body-plan anchor. Dark/hooded/monochrome humanoid descriptions
+      // (e.g. "assassin", "black hooded armor") repeatedly got misread by the
+      // model as a shadow creature — see local test notes. Naming the body plan
+      // up front pulls it back to a person; creature mode intentionally does the
+      // opposite so real monsters are not forced into human proportions.
+      const bodyType = character.bodyType === 'creature' ? 'creature' : 'humanoid';
+      const bodyTypeClause = bodyType === 'creature'
+        ? 'a non-human creature or monster, free to use its own natural anatomy such as extra limbs, wings, a tail, scales or fur'
+        : 'a human-proportioned humanoid, two arms, two legs and a clearly readable face, standing upright, not a beast or amorphous creature';
       // Keep this list short: it is the only place forbidden items actually reach the
       // model (the OpenAI-compatible image API has no negative_prompt parameter), and
       // generation.service.ts appends it verbatim after the main prompt at runtime.
       // "empty cell" / "fewer than sixteen" guard against the model quietly merging
       // multi-stage rows (attack, death) into 3 poses and leaving the 4th cell blank.
-      const defaultNegativePrompt = 'malformed anatomy or face, character identity changes between frames, missing or conflicting weapon, opaque or checkerboard background, grid lines, borders, text, watermark, turnaround or model sheet, cropped or overlapping pose, empty or blank cell, fewer than sixteen frames';
+      // "character missing" / "weapon or prop alone" guard against a different failure
+      // seen in local testing: on the later sub-poses of attack/death the model can drop
+      // the character entirely and render just the weapon/prop (e.g. a leafy club frame
+      // turning into a bare branch with no person holding it).
+      const defaultNegativePrompt = 'malformed anatomy or face, character identity changes between frames, missing or conflicting weapon, character missing or replaced by only the weapon or a prop, disembodied weapon or scenery with no character, opaque or checkerboard background, grid lines, borders, text, watermark, turnaround or model sheet, cropped or overlapping pose, pose touching or cut off by the cell edge, empty or blank cell, fewer than sixteen frames';
       return {
         // Art-quality anchor first (highest attention weight), then one merged
         // identity clause (weapon folded into the description, not a separate
@@ -115,9 +130,9 @@ export class MockAIProvider implements AIProvider {
         prompt: [
           `${styleAnchor}, ${artDirection}, polished finished commercial game art, not a draft or concept sketch.`,
           '',
-          `NPC sprite sheet subject: ${character.name || spec.subject} — ${visualBrief}, wielding ${weapon} in every frame — this overrides any different weapon mentioned above.`,
+          `NPC sprite sheet subject: ${character.name || spec.subject} — ${bodyTypeClause}; ${visualBrief}, wielding ${weapon} in every frame — this overrides any different weapon mentioned above.`,
           '',
-          'One 1024x1024 PNG, 4 columns by 4 rows of invisible 256x256 cells, exactly 16 frames with every cell filled, one complete full-body pose centered in every cell:',
+          'One 1024x1024 PNG, 4 columns by 4 rows of invisible 256x256 cells, exactly 16 frames with every cell filled, one complete full-body pose centered in every cell, nothing touching the cell edge:',
           'row 1 idle (4 frames), row 2 walk (4 frames), row 3 attack as 4 distinct frames (anticipation, strike, impact, recovery), row 4 death as 4 distinct frames (hit reaction, losing balance, falling, defeated hold).',
           `Fixed 45-degree top-down game perspective, facing ${facing} in every frame, identical character identity, scale and lighting across all frames, feet aligned to one shared baseline.`,
           'Clean, fully isolated character on a true transparent PNG alpha background, no grid lines, separators, text or watermark.',

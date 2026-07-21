@@ -40,6 +40,24 @@ describe('MockAIProvider', () => {
     expect(result.prompt).toContain('wooden club');
     expect(result.prompt).toContain('true transparent PNG alpha background');
   });
+
+  it('defaults to a humanoid body-plan anchor when bodyType is not set', async () => {
+    const provider = new MockAIProvider();
+    const spec = await provider.generateDesignSpec({ name: 'Night Ninja', description: 'dark grey outfit, hooded', typeId: 'npc', weaponType: 'twin daggers' }, {});
+    const result = await provider.generatePrompt(spec, {});
+
+    expect(result.prompt).toContain('human-proportioned humanoid');
+    expect(result.prompt).not.toContain('non-human creature or monster');
+  });
+
+  it('switches to a creature body-plan anchor when bodyType is "creature"', async () => {
+    const provider = new MockAIProvider();
+    const spec = await provider.generateDesignSpec({ name: 'Swamp Beast', description: 'four-legged bog monster', typeId: 'npc', weaponType: 'sharp claws', bodyType: 'creature' }, {});
+    const result = await provider.generatePrompt(spec, {});
+
+    expect(result.prompt).toContain('non-human creature or monster');
+    expect(result.prompt).not.toContain('human-proportioned humanoid');
+  });
 });
 
 describe('OpenAICompatibleProvider', () => {
