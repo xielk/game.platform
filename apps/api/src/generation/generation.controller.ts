@@ -23,6 +23,8 @@ export class GenerationController {
   @Get('tasks/:taskId') get(@Param('taskId') taskId: string) { return this.db.generationTask.findUniqueOrThrow({ where: { taskId }, include: { results: { include: { file: true, assetVersion: true } }, styleProfile: true, game: true, level: true, assetType: true } }); }
   @Post('draft') draft(@Body() dto: DraftDto) { return this.service.draft(dto); }
   @Post('tasks/:taskId/confirm') confirm(@Param('taskId') taskId: string, @Body() body: { prompt?: string; negativePrompt?: string }) { return this.service.confirm(taskId, body); }
+  @Post('tasks/:taskId/continue') continueTask(@Param('taskId') taskId: string) { return this.service.continueTask(taskId); }
+  @Post('tasks/:taskId/regenerate') regenerate(@Param('taskId') taskId: string, @Body() body: { prompt?: string; negativePrompt?: string }) { return this.service.regenerate(taskId, body); }
   @Post('tasks/:taskId/retry') retry(@Param('taskId') taskId: string) { return this.service.retry(taskId); }
   @Post('tasks/:taskId/cancel') cancel(@Param('taskId') taskId: string) { return this.service.cancel(taskId); }
   @Post('image2-hardcoded')

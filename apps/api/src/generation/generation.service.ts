@@ -16,6 +16,15 @@ export class GenerationService {
   private now() { return new Date().toISOString(); }
   private isGptImageModel(model: string) { return /^gpt-image/i.test(model); }
   private isNpcSpriteSheet(input: { typeId?: string }) { return input.typeId === 'npc'; }
+  private sanitizeNpcArtStyle(value?: string) {
+    const fallback = '2D top-down tower defense game sprite, crisp silhouette, readable chibi proportions, neon cyan accents on the character only';
+    return (value || fallback)
+      .replace(/暗色底|深色底|黑色底|暗背景|深色背景|黑色背景|背景为暗色|背景为深色|dark background|black background|solid background|gradient background/gi, '深色服装和霓虹高光')
+      .replace(/透明背景要求|透明背景|背景/gi, '')
+      .replace(/不是\s*$/g, '')
+      .replace(/[，,、]\s*[，,、]+/g, '，')
+      .trim();
+  }
   private normalizeImageSize(model: string, size?: string) {
     const requested = size || '1024x1024';
     if (this.isGptImageModel(model) && requested === '512x512') return '1024x1024';
@@ -84,6 +93,7 @@ export class GenerationService {
       sheetSize: isNpcSpriteSheet ? '1024x1024' : input.sheetSize,
       frameSize: isNpcSpriteSheet ? '256x256' : input.frameSize,
       animationFrameConfig: isNpcSpriteSheet ? 'idle:0-3@6 loop; walk:4-7@8 loop; attack:8-11@10 once; die:12-15@7 once' : input.animationFrameConfig,
+      artStyle: isNpcSpriteSheet ? this.sanitizeNpcArtStyle(input.artStyle || (styleSnapshot as any).artStyle) : input.artStyle,
       transparent: isNpcSpriteSheet ? true : (this.isGptImageModel(modelName) ? false : (input.transparent ?? true)),
       removeShadow: isNpcSpriteSheet ? true : input.removeShadow,
     };
@@ -124,6 +134,59 @@ export class GenerationService {
     setImmediate(() => void this.run(taskId));
     return task;
   }
+  async continueTask(taskId: string) {
+    const source = await this.db.generationTask.findUniqueOrThrow({ where: { taskId } });
+    const next = await this.db.generationTask.create({
+      data: {
+        taskId: `gen_${randomUUID().replace(/-/g, '')}`,
+        gameId: source.gameId,
+        levelId: source.levelId,
+        assetTypeId: source.assetTypeId,
+        assetId: source.assetId,
+        styleProfileId: source.styleProfileId,
+        status: 'queued',
+        provider: source.provider,
+        model: source.model,
+        input: source.input as Prisma.InputJsonValue,
+        designSpec: source.designSpec as Prisma.InputJsonValue,
+        prompt: source.prompt,
+        negativePrompt: source.negativePrompt,
+        modelParams: source.modelParams as Prisma.InputJsonValue,
+        referenceFileIds: source.referenceFileIds as Prisma.InputJsonValue,
+        runtimeLogs: [{ ts: this.now(), level: 'info', message: '继续生成：沿用原任务全部输入、规格和 Prompt', data: { sourceTaskId: taskId } }] as Prisma.InputJsonValue,
+      },
+    });
+    setImmediate(() => void this.run(next.taskId));
+    return next;
+  }
+  async regenerate(taskId: string, patch?: { prompt?: string; negativePrompt?: string }) {
+    const task = await this.db.generationTask.findUniqueOrThrow({ where: { taskId }, include: { results: { include: { file: true } }, styleProfile: true } });
+    const params = (task.modelParams || {}) as Record<string, unknown>;
+    let nextPatch = patch;
+    const promptWasNotEdited = patch?.prompt === undefined || patch.prompt === task.prompt;
+    if (params.spriteSheet === 'npc' && promptWasNotEdited) {
+      const styleSnapshot = task.styleProfile ? JSON.parse(JSON.stringify(task.styleProfile, (_key, value) => typeof value === 'bigint' ? value.toString() : value)) : {};
+      const refreshed = await this.provider().generatePrompt((task.designSpec || {}) as Record<string, unknown>, styleSnapshot);
+      const negativePromptWasNotEdited = patch?.negativePrompt === undefined || patch.negativePrompt === task.negativePrompt;
+      nextPatch = {
+        ...patch,
+        prompt: refreshed.prompt,
+        negativePrompt: negativePromptWasNotEdited ? refreshed.negativePrompt : patch?.negativePrompt,
+      };
+    }
+    for (const result of task.results) {
+      if (result.assetVersionId) continue;
+      await this.db.generationResult.delete({ where: { id: result.id } });
+      if (result.file) {
+        await this.db.assetFile.delete({ where: { id: result.file.id } }).catch(() => undefined);
+        await this.storage.remove(result.file.storageKey).catch(() => undefined);
+      }
+    }
+    await this.db.generationTask.update({ where: { taskId }, data: { ...nextPatch, status: 'queued', errorMessage: null, startedAt: null, finishedAt: null } });
+    await this.appendLog(taskId, 'warn', '重新生成：已清空未登记候选结果，并使用当前 Prompt 覆盖生成', { quality: String(params.quality || process.env.AI_IMAGE_QUALITY || 'low'), promptRefreshed: params.spriteSheet === 'npc' && promptWasNotEdited });
+    setImmediate(() => void this.run(taskId));
+    return this.db.generationTask.findUniqueOrThrow({ where: { taskId } });
+  }
   async retry(taskId: string) { return this.confirm(taskId); }
   async cancel(taskId: string) {
     await this.appendLog(taskId, 'warn', '任务被手动取消');
@@ -134,9 +197,11 @@ export class GenerationService {
       const task = await this.db.generationTask.update({ where: { taskId }, data: { status: 'processing', startedAt: new Date(), attemptCount: { increment: 1 } } });
       const options = this.normalizeModelParamsForRun(task.model || process.env.AI_IMAGE_MODEL || 'mock-image', (task.modelParams || {}) as Record<string, unknown>);
       const prompt = this.normalizePromptForModel(task.model || process.env.AI_IMAGE_MODEL || 'mock-image', task.prompt || '', options);
+      const negativePrompt = String(task.negativePrompt || '').trim();
+      const generationPrompt = negativePrompt ? `${prompt}\n\nAvoid these failure modes: ${negativePrompt}.` : prompt;
       const requestUrl = `${(process.env.AI_API_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')}/images/generations`;
-      await this.appendLog(taskId, 'info', '开始调用 AI 生成', { provider: task.provider, model: task.model, requestUrl, payload: this.providerPayloadPreview(task.model || '', prompt, options) });
-      const results = await this.provider().generateImage(prompt, options);
+      await this.appendLog(taskId, 'info', '开始调用 AI 生成', { provider: task.provider, model: task.model, requestUrl, payload: this.providerPayloadPreview(task.model || '', generationPrompt, options) });
+      const results = await this.provider().generateImage(generationPrompt, options);
       await this.appendLog(taskId, 'info', 'AI 返回结果', { count: results.length });
       for (const result of results) {
         const stored = await this.storage.put(result.buffer, `${task.taskId}.png`, result.mimeType, `generation/${task.taskId}`);

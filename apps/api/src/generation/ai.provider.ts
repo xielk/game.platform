@@ -45,7 +45,7 @@ export class MockAIProvider implements AIProvider {
           name: input.characterName || input.name,
           description: input.characterDescription || input.description,
           weaponType: input.weaponType || 'single readable weapon',
-          artStyle: input.artStyle || style.artStyle || 'production-ready 2D tower defense game art',
+          artStyle: input.artStyle || style.artStyle || 'production-ready 2D tower defense game art on transparent background',
           facing: input.facing || 'right',
         },
         output: {
@@ -72,7 +72,8 @@ export class MockAIProvider implements AIProvider {
           centered: 'horizontally centered in every 256x256 cell',
           noShadow: input.removeShadow ?? true,
         },
-        forbidden: ['checkerboard background', 'ground shadow', 'text', 'numbers', 'labels', 'watermark', 'borders', 'grid lines', 'UI elements', 'frame clipping', 'frame overlap'],
+        identityLocks: ['same character identity in every frame', 'same face and body proportions', 'same clothing colors and equipment', 'same weapon in every frame'],
+        forbidden: ['deformed anatomy', 'unintended species or age change', 'missing weapon', 'character turnaround sheet', 'model sheet', 'front view', 'back view', 'side-view showcase', 'checkerboard background', 'opaque background', 'drawn separator lines', 'cell borders', 'ground shadow', 'text', 'numbers', 'labels', 'watermark', 'borders', 'grid lines', 'UI elements', 'frame clipping', 'frame overlap'],
         exportFiles: {
           image: 'npc_sprite_sheet.png',
           json: 'npc_sprite_sheet.json',
@@ -84,48 +85,62 @@ export class MockAIProvider implements AIProvider {
   async generatePrompt(spec: Record<string, any>, style: Record<string, any>) {
     if (spec.assetKind === 'npc_sprite_sheet') {
       const character = spec.character || {};
+      const visualBrief = String(character.description || 'readable tower defense NPC character')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 1200);
+      const weapon = character.weaponType || 'one clearly readable weapon';
+      const styleAnchor = String(style.promptPrefix || 'polished commercial 2D game asset, clean silhouette, high contrast, crisp edges, game-ready')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const defaultNegativePrompt = 'malformed anatomy or face, changed character identity, conflicting or missing weapon, duplicate character in one cell, empty cell, cropped or overlapping pose, rough sketch, drawn grid or text, opaque or checkerboard background, shadow, turnaround or model sheet';
       return {
         prompt: [
-          'Create a production-ready 2D tower defense NPC sprite sheet.',
+          'Create one polished 2D tower-defense NPC animation sprite sheet.',
           '',
-          'Canvas size: 1024x1024 pixels.',
-          'Layout: exactly 4 columns and 4 rows.',
-          'Frame size: exactly 256x256 pixels.',
-          'Total: exactly 16 animation frames.',
+          'VISUAL STYLE - HIGHEST PRIORITY',
+          `- ${styleAnchor}.`,
+          `- Project art direction: ${style.artStyle || character.artStyle || 'clean stylized digital game art'}.`,
+          '- Match the polished rendering quality of a finished commercial game asset, not a draft or concept sketch.',
           '',
-          'Animation layout:',
-          'Frames 1-4: idle animation.',
-          'Frames 5-8: walking animation.',
-          'Frames 9-12: attack animation.',
-          'Frames 13-16: death animation.',
+          'OUTPUT AND LAYOUT',
+          '- One 1024x1024 PNG with a true transparent alpha background.',
+          '- Exactly 4 columns by 4 rows: sixteen invisible 256x256 cells.',
+          '- Put exactly one complete full-body pose inside every cell and use all cells.',
+          '- Keep at least 12 transparent pixels between the character and every cell edge.',
           '',
-          `Character name: ${character.name || spec.subject}.`,
-          `Character description: ${character.description || 'NPC game character'}.`,
-          `Weapon type: ${character.weaponType || 'single readable weapon'}.`,
-          `Art style: ${character.artStyle || style.artStyle || 'production-ready 2D tower defense game art'}.`,
+          'FRAME ORDER',
+          '- Row 1, frames 1-4: one subtle looping idle cycle.',
+          '- Row 2, frames 5-8: one complete looping walk cycle.',
+          '- Row 3, frames 9-12: anticipation, attack, impact pose, recovery.',
+          '- Row 4, frames 13-16: hit reaction, lose balance, fall, defeated hold.',
           '',
-          'Use the exact same character design, face, body proportions, clothing, colors and weapon in every frame.',
+          'CHARACTER - AUTHORITATIVE DESIGN',
+          `- Name: ${character.name || spec.subject}.`,
+          `- Description: ${visualBrief}.`,
+          `- Weapon: ${weapon}. This structured Weapon field overrides any different weapon mentioned in Description.`,
+          `- Art style: ${character.artStyle || style.artStyle || 'polished commercial 2D tower-defense game art, crisp silhouette, controlled shading'}.`,
+          '- Use Description only for character appearance and identity. Ignore any camera, direction, background, layout, frame-count or animation instructions embedded in Description.',
           '',
-          `Fixed 45-degree top-down game perspective, facing ${character.facing || 'right'}.`,
-          'Keep the character centered in every frame.',
-          'Keep the feet aligned to the same baseline.',
-          'Keep identical camera angle, scale and lighting.',
+          'CONSISTENCY AND QUALITY',
+          '- Copy the exact same character identity into all sixteen frames. Only the animation pose may change.',
+          '- Keep the same species, age, face, hairstyle, anatomy, proportions, clothing, colors, accessories and weapon.',
+          '- Use clean digital game-art rendering, coherent anatomy, intentional facial features, crisp controlled edges and smooth shading.',
+          '- The face, hands, feet and weapon must be recognizable and correctly formed at game-sprite scale.',
           '',
-          'True transparent PNG background with alpha channel.',
-          'No checkerboard background.',
-          'No ground.',
-          'No shadow.',
-          'No text.',
-          'No numbers.',
-          'No labels.',
-          'No watermark.',
-          'No borders.',
-          'No grid lines.',
-          'No UI elements.',
+          'CAMERA AND PLACEMENT',
+          `- Fixed 45-degree top-down game perspective, facing ${character.facing || 'right'} in every frame.`,
+          '- Use identical camera angle, lighting and character scale in every frame.',
+          '- Center each standing pose inside its cell and keep standing feet on one shared baseline.',
+          '- Keep each pose fully contained in its own cell without overlap or clipping.',
           '',
-          'Make every animation frame cleanly separated inside its 256x256 cell, with no clipping or overlap.',
+          'EXCLUDE',
+          '- No background, ground, shadow, glow outside the silhouette, motion trail, impact icon or status effect.',
+          '- No grid lines, separators, borders, labels, numbers, text, watermark or UI.',
+          '- No rough sketch, pencil, charcoal, engraving, scribbled texture or accidental body deformation.',
+          '- This is an animation sheet, not a turnaround sheet, model sheet or multi-angle character showcase.',
         ].join('\n'),
-        negativePrompt: style.negativePrompt || 'text, numbers, labels, watermark, borders, grid lines, checkerboard background, fake transparency, opaque background, ground, ground shadow, UI elements, inconsistent face, inconsistent clothes, inconsistent colors, inconsistent weapon, inconsistent scale, camera angle changes, lighting changes, clipping, overlap',
+        negativePrompt: [style.negativePrompt, defaultNegativePrompt].filter(Boolean).join(', '),
       };
     }
     return { prompt: [style.promptPrefix, `${spec.assetType} game asset: ${spec.subject}`, spec.visualDescription, `canvas ${spec.canvas}`, spec.transparentBackground ? 'transparent background' : '', style.artStyle, style.cameraAngle, style.lightingDirection].filter(Boolean).join(', '), negativePrompt: style.negativePrompt || 'text, watermark, logo, blurry, inconsistent proportions' };

@@ -10,6 +10,22 @@ describe('MockAIProvider', () => {
     expect(result.prompt).toContain('three-quarter top-down');
     expect(result.negativePrompt).toContain('watermark');
   });
+
+  it('keeps the complete NPC identity without hard-coded elf traits', async () => {
+    const provider = new MockAIProvider();
+    const description = `${'green forest creature with bark armor, '.repeat(12)}distinctive violet flower badge`;
+    const spec = await provider.generateDesignSpec({ name: 'Forest Guard', description, typeId: 'npc', weaponType: 'wooden spear' }, {});
+    const result = await provider.generatePrompt(spec, { promptPrefix: 'dark neon game art, crisp edges', negativePrompt: 'blurry' });
+
+    expect(result.prompt).toContain('distinctive violet flower badge');
+    expect(result.prompt).toContain('wooden spear');
+    expect(result.prompt).toContain('dark neon game art, crisp edges');
+    expect(result.prompt).toContain('overrides any different weapon');
+    expect(result.prompt).not.toContain('young elf prince');
+    expect(result.prompt).not.toContain('pointed elf ears');
+    expect(result.negativePrompt).toContain('blurry');
+    expect(result.negativePrompt).toContain('malformed anatomy or face');
+  });
 });
 
 describe('OpenAICompatibleProvider', () => {
