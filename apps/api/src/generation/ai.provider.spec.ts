@@ -26,6 +26,20 @@ describe('MockAIProvider', () => {
     expect(result.negativePrompt).toContain('blurry');
     expect(result.negativePrompt).toContain('malformed anatomy or face');
   });
+
+  it('keeps the single-shot NPC sprite sheet prompt short and free of verbose rule sections', async () => {
+    const provider = new MockAIProvider();
+    const spec = await provider.generateDesignSpec({ name: 'Goblin', description: 'green raider with a red scarf', typeId: 'npc', weaponType: 'wooden club' }, {});
+    const result = await provider.generatePrompt(spec, { promptPrefix: 'dark sci-fi neon style, clean silhouette, high contrast, crisp edges, game-ready' });
+
+    expect(result.prompt.split(/\s+/).length).toBeLessThan(200);
+    for (const heading of ['VISUAL STYLE', 'OUTPUT AND LAYOUT', 'FRAME ORDER', 'CHARACTER - AUTHORITATIVE', 'CONSISTENCY AND QUALITY', 'CAMERA AND PLACEMENT', 'EXCLUDE']) {
+      expect(result.prompt).not.toContain(heading);
+    }
+    expect(result.prompt.indexOf('dark sci-fi neon style')).toBeLessThan(result.prompt.indexOf('Goblin'));
+    expect(result.prompt).toContain('wooden club');
+    expect(result.prompt).toContain('true transparent PNG alpha background');
+  });
 });
 
 describe('OpenAICompatibleProvider', () => {

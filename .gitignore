@@ -40,3 +40,7 @@ coverage/
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+# local-only notes (never commit)
+LOCAL.md
+tmp-test-output/
