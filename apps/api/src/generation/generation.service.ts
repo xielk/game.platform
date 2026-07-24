@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { AIProvider, DesignInput, MockAIProvider, OpenAICompatibleProvider } from './ai.provider';
+import { normalizeImageBuffer } from './image-normalizer';
 
 type RuntimeLogLevel = 'info' | 'warn' | 'error';
 type RuntimeLogEntry = { ts: string; level: RuntimeLogLevel; message: string; data?: Record<string, unknown> };
@@ -204,7 +205,15 @@ export class GenerationService {
       const results = await this.provider().generateImage(generationPrompt, options);
       await this.appendLog(taskId, 'info', 'AI 返回结果', { count: results.length });
       for (const result of results) {
-        const stored = await this.storage.put(result.buffer, `${task.taskId}.png`, result.mimeType, `generation/${task.taskId}`);
+        const normalized = await normalizeImageBuffer(result.buffer, String(options.size || '1024x1024'));
+        if (normalized.adjusted) {
+          await this.appendLog(taskId, 'warn', 'AI 返回尺寸与请求不一致，已自动缩放到目标尺寸', {
+            requestedSize: options.size,
+            sourceSize: normalized.sourceSize,
+            targetSize: normalized.targetSize,
+          });
+        }
+        const stored = await this.storage.put(normalized.buffer, `${task.taskId}.png`, normalized.mimeType, `generation/${task.taskId}`);
         const file = await this.db.assetFile.create({ data: { purpose: 'generated', provider: 'local', storageKey: stored.key, originalName: stored.originalName, mimeType: stored.mimeType, sizeBytes: BigInt(stored.size), sha256: stored.sha256, publicPath: stored.publicPath } });
         await this.db.generationResult.create({ data: { resultId: `result_${randomUUID().replace(/-/g, '')}`, taskId: task.id, fileId: file.id, providerResultId: result.providerResultId, seed: result.seed, metadata: result.metadata as any } });
         await this.appendLog(taskId, 'info', '已保存结果文件', { publicPath: stored.publicPath, mimeType: stored.mimeType, size: stored.size });
