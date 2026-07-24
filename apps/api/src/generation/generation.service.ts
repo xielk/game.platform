@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { AIProvider, DesignInput, MockAIProvider, OpenAICompatibleProvider } from './ai.provider';
 import { normalizeImageBuffer } from './image-normalizer';
+import { applyCheckerboardKeyingIfNeeded } from './checkerboard-keyer';
 
 type RuntimeLogLevel = 'info' | 'warn' | 'error';
 type RuntimeLogEntry = { ts: string; level: RuntimeLogLevel; message: string; data?: Record<string, unknown> };
@@ -213,7 +214,27 @@ export class GenerationService {
             targetSize: normalized.targetSize,
           });
         }
-        const stored = await this.storage.put(normalized.buffer, `${task.taskId}.png`, normalized.mimeType, `generation/${task.taskId}`);
+        let outputBuffer = normalized.buffer;
+        let outputMime = normalized.mimeType;
+        if (options.requiresTransparentAlpha) {
+          const keyed = await applyCheckerboardKeyingIfNeeded(outputBuffer);
+          if (keyed.attempted && keyed.applied) {
+            outputBuffer = keyed.buffer;
+            outputMime = keyed.mimeType;
+            await this.appendLog(taskId, 'info', '检测到 RGB 棋盘格背景，已自动抠为透明 PNG', {
+              transparentSamples: keyed.statsAfter?.transparentSamples,
+              edgeOpaqueRatio: keyed.statsAfter?.edgeOpaqueRatio,
+            });
+          } else if (keyed.attempted && !keyed.success) {
+            await this.appendLog(taskId, 'warn', '检测到 RGB 棋盘格背景，但自动抠透明未通过校验，请重新生成', {
+              reason: keyed.reason,
+              edgeGrayRatio: keyed.statsBefore?.edgeGrayRatio,
+              transparentSamplesAfter: keyed.statsAfter?.transparentSamples,
+              edgeOpaqueRatioAfter: keyed.statsAfter?.edgeOpaqueRatio,
+            });
+          }
+        }
+        const stored = await this.storage.put(outputBuffer, `${task.taskId}.png`, outputMime, `generation/${task.taskId}`);
         const file = await this.db.assetFile.create({ data: { purpose: 'generated', provider: 'local', storageKey: stored.key, originalName: stored.originalName, mimeType: stored.mimeType, sizeBytes: BigInt(stored.size), sha256: stored.sha256, publicPath: stored.publicPath } });
         await this.db.generationResult.create({ data: { resultId: `result_${randomUUID().replace(/-/g, '')}`, taskId: task.id, fileId: file.id, providerResultId: result.providerResultId, seed: result.seed, metadata: result.metadata as any } });
         await this.appendLog(taskId, 'info', '已保存结果文件', { publicPath: stored.publicPath, mimeType: stored.mimeType, size: stored.size });
